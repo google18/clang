@@ -34,6 +34,9 @@ docs/analyzer/_build
 # debug info testsuite
 test/debuginfo-tests
 
+# clang-tools-extra repo
+tools/extra
+
 # VS2017 and VSCode config files.
 .vscode
 .vs
