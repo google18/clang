@@ -15,7 +15,8 @@
 # vim swap files
 .*.sw?
 .sw?
-
+# Mac DS_Store files
+*.DS_Store
 #==============================================================================#
 # Explicit files to ignore (only matches one).
 #==============================================================================#
@@ -33,6 +34,9 @@ docs/_build
 docs/analyzer/_build
 # debug info testsuite
 test/debuginfo-tests
+
+# clang-tools-extra repo
+tools/extra
 
 # VS2017 and VSCode config files.
 .vscode
