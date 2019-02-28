@@ -94,19 +94,6 @@
 
 using namespace clang;
 
-unsigned ASTContext::NumImplicitDefaultConstructors;
-unsigned ASTContext::NumImplicitDefaultConstructorsDeclared;
-unsigned ASTContext::NumImplicitCopyConstructors;
-unsigned ASTContext::NumImplicitCopyConstructorsDeclared;
-unsigned ASTContext::NumImplicitMoveConstructors;
-unsigned ASTContext::NumImplicitMoveConstructorsDeclared;
-unsigned ASTContext::NumImplicitCopyAssignmentOperators;
-unsigned ASTContext::NumImplicitCopyAssignmentOperatorsDeclared;
-unsigned ASTContext::NumImplicitMoveAssignmentOperators;
-unsigned ASTContext::NumImplicitMoveAssignmentOperatorsDeclared;
-unsigned ASTContext::NumImplicitDestructors;
-unsigned ASTContext::NumImplicitDestructorsDeclared;
-
 enum FloatingRank {
   Float16Rank, HalfRank, FloatRank, DoubleRank, LongDoubleRank, Float128Rank
 };
@@ -1915,8 +1902,16 @@ TypeInfo ASTContext::getTypeInfoImpl(const Type *T) const {
       break;
     case BuiltinType::Float16:
     case BuiltinType::Half:
-      Width = Target->getHalfWidth();
-      Align = Target->getHalfAlign();
+      if (Target->hasFloat16Type() || !getLangOpts().OpenMP ||
+          !getLangOpts().OpenMPIsDevice) {
+        Width = Target->getHalfWidth();
+        Align = Target->getHalfAlign();
+      } else {
+        assert(getLangOpts().OpenMP && getLangOpts().OpenMPIsDevice &&
+               "Expected OpenMP device compilation.");
+        Width = AuxTarget->getHalfWidth();
+        Align = AuxTarget->getHalfAlign();
+      }
       break;
     case BuiltinType::Float:
       Width = Target->getFloatWidth();
@@ -1931,8 +1926,16 @@ TypeInfo ASTContext::getTypeInfoImpl(const Type *T) const {
       Align = Target->getLongDoubleAlign();
       break;
     case BuiltinType::Float128:
-      Width = Target->getFloat128Width();
-      Align = Target->getFloat128Align();
+      if (Target->hasFloat128Type() || !getLangOpts().OpenMP ||
+          !getLangOpts().OpenMPIsDevice) {
+        Width = Target->getFloat128Width();
+        Align = Target->getFloat128Align();
+      } else {
+        assert(getLangOpts().OpenMP && getLangOpts().OpenMPIsDevice &&
+               "Expected OpenMP device compilation.");
+        Width = AuxTarget->getFloat128Width();
+        Align = AuxTarget->getFloat128Align();
+      }
       break;
     case BuiltinType::NullPtr:
       Width = Target->getPointerWidth(0); // C++ 3.9.1p11: sizeof(nullptr_t)
