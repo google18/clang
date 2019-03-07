@@ -6,6 +6,8 @@
 #include "clang/Tooling/MatcherGen/MatcherGen.h"
 #include <vector>
 #include <deque>
+#include <sstream>
+#include <fstream>
 
 using namespace llvm;
 using namespace clang;
@@ -21,6 +23,9 @@ static cl::opt<std::string> DestinationPath(cl::Positional,
                                             cl::desc("<destination>"),
                                             cl::Optional,
                                             cl::cat(ClangDiffCategory));
+
+static cl::opt<std::string> CompareFilesPath("m", cl::desc("TODO"), cl::init(""), 
+                                             cl::Optional, cl::cat(ClangDiffCategory));
 
 static cl::opt<std::string> BuildPath("p", cl::desc("Build path"), cl::init(""),
                                       cl::Optional, cl::cat(ClangDiffCategory));
@@ -157,46 +162,116 @@ int main(int argc, const char **argv) {
     return 1;
   }
 
-  std::unique_ptr<ASTUnit> Src = getAST(CommonCompilations, SourcePath);
-  std::unique_ptr<ASTUnit> Dst = getAST(CommonCompilations, DestinationPath);
-  if (!Src || !Dst)
-    return 1;
+  std::vector<std::pair<std::string, std::string>> ExampleFilenames;
 
-  diff::ComparisonOptions Options;
+  if (!CompareFilesPath.empty()) {
+    std::ifstream InputStream(CompareFilesPath);
+    std::stringstream StringStream;
+    StringStream << InputStream.rdbuf();
+    std::string Contents = StringStream.str();
 
-  diff::SyntaxTree SrcTree(Src->getASTContext());
-  diff::SyntaxTree DstTree(Dst->getASTContext());
-  diff::ASTDiff Diff(SrcTree, DstTree, Options); 
-  
-  printTree(llvm::outs(), SrcTree);
-  printTree(llvm::outs(), DstTree);
+    size_t Pos = 0;
+    std::string Delimiter = "\n";
+    while ((Pos = Contents.find(Delimiter)) != std::string::npos) {
+      std::string Token = Contents.substr(0, Pos);
+      size_t CommaPos = Token.find(",");
+      if (CommaPos == std::string::npos) {
+        llvm::outs() << "Malformed example filename list!";
+        break;
+      }
+      std::string Before = Token.substr(0, CommaPos);
+      std::string After = Token.substr(CommaPos + 1, Token.length());
+      std::pair<std::string, std::string> Pair(Before, After);
+      ExampleFilenames.push_back(Pair);
+      Contents.erase(0, Pos + Delimiter.length());
+    }
 
-  for (diff::NodeId Dst : DstTree) {
-    printDstChange(llvm::outs(), Diff, SrcTree, DstTree, Dst);
+    for (std::pair<std::string, std::string> Elem : ExampleFilenames) {
+      llvm::outs() << "(" << Elem.first << ", " << Elem.second << "), ";
+    }
+    llvm::outs() << "\n";
   }
-  for (diff::NodeId Src : SrcTree) {
-    if (Diff.getMapped(SrcTree, Src).isInvalid()) {
-      llvm::outs() << "Delete ";
-      printNode(llvm::outs(), SrcTree, Src);
+  else {
+    std::pair<std::string, std::string> Pair(SourcePath, DestinationPath);
+    ExampleFilenames.push_back(Pair);
+  }
+
+  std::vector<std::vector<matcher_gen::Diff>> ListOfDiffs;
+
+  for (std::pair<std::string, std::string> Pair : ExampleFilenames) {
+    std::unique_ptr<ASTUnit> Src = getAST(CommonCompilations, Pair.first);
+    std::unique_ptr<ASTUnit> Dst = getAST(CommonCompilations, Pair.second);
+    if (!Src || !Dst) 
+      return 1;
+
+    diff::ComparisonOptions Options;
+
+    diff::SyntaxTree SrcTree(Src->getASTContext());
+    diff::SyntaxTree DstTree(Dst->getASTContext());
+    diff::ASTDiff Diff(SrcTree, DstTree, Options); 
+    
+    llvm::outs() << "Before:\n";
+    printTree(llvm::outs(), SrcTree);
+    llvm::outs() << "\n";
+    llvm::outs() << "After:\n";
+    printTree(llvm::outs(), DstTree);
+    llvm::outs() << "\n";
+
+    llvm::outs() << "clang-diff:\n";
+    for (diff::NodeId Dst : DstTree) {
+      printDstChange(llvm::outs(), Diff, SrcTree, DstTree, Dst);
+    }
+    for (diff::NodeId Src : SrcTree) {
+      if (Diff.getMapped(SrcTree, Src).isInvalid()) {
+        llvm::outs() << "Delete ";
+        printNode(llvm::outs(), SrcTree, Src);
+        llvm::outs() << "\n";
+      }
+    }
+    llvm::outs() << "\n";
+   
+    llvm::outs() << "Nodes of interest:\n";
+    std::vector<diff::NodeId> DiffNodes = matcher_gen::findSourceDiff(SrcTree, DstTree, Diff);
+    std::vector<matcher_gen::Diff> DiffList = matcher_gen::findSourceDiffList(SrcTree, DstTree, Diff);
+    ListOfDiffs.push_back(DiffList);
+    for (diff::NodeId Id : DiffNodes) {
+      llvm::outs() << Id.Id << ", ";
+    }
+    llvm::outs() << "\n";
+
+    llvm::outs() << "Computing LCA...\n";
+    diff::NodeId Ancestor = matcher_gen::LCA(SrcTree, DiffNodes);
+    if (Ancestor.Id != -1) {
+      llvm::outs() << Ancestor.Id << "\n";
+      llvm::outs() << "\n";
+      std::string MatcherString;
+      matcher_gen::printMatcher(SrcTree, Ancestor, MatcherString, MatchExpr, MatchBinOp, MatchParmVarDecl, MatchNamedDecl, MatchConstructExpr, MatchCallExpr);
+      matcher_gen::cleanUpCommas(MatcherString);
+      llvm::outs() << MatcherString << "\n";
       llvm::outs() << "\n";
     }
   }
- 
-  std::vector<diff::NodeId> DiffNodes = matcher_gen::findSourceDiff(SrcTree, DstTree, Diff);
-  for (diff::NodeId Id : DiffNodes) {
-    llvm::outs() << Id.Id << ", ";
+
+  for (std::vector<matcher_gen::Diff> Diffs : ListOfDiffs) {
+    for (matcher_gen::Diff Diff: Diffs) {
+      llvm::outs() << Diff;
+      llvm::outs() << "\n";
+    }
+    llvm::outs() << "\n\n";
   }
-  llvm::outs() << "\n";
 
-  llvm::outs() << "Computing LCA...\n";
-  diff::NodeId Ancestor = matcher_gen::LCA(SrcTree, DiffNodes);
-  if (Ancestor.Id != -1) {
-    llvm::outs() << Ancestor.Id << "\n";
+  if (ListOfDiffs.size() > 1) {
+    std::vector<matcher_gen::Diff> D1 = ListOfDiffs[0];
+    std::vector<matcher_gen::Diff> D2 = ListOfDiffs[1];
+    std::vector<matcher_gen::Diff> LCS = matcher_gen::LCS(D1, D2);
+    for (size_t i = 2; i < ListOfDiffs.size(); i++) {
+      LCS = matcher_gen::LCS(LCS, ListOfDiffs[i]);
+    }
 
-    std::string MatcherString;
-    matcher_gen::printMatcher(SrcTree, Ancestor, MatcherString, MatchExpr, MatchBinOp, MatchParmVarDecl, MatchNamedDecl, MatchConstructExpr, MatchCallExpr);
-    matcher_gen::cleanUpCommas(MatcherString);
-    llvm::outs() << MatcherString << "\n";
+    for (matcher_gen::Diff Diff : LCS) {
+      llvm::outs() << Diff << "\n";
+    }
+    llvm::outs() << "\n";
   } 
   return 0;
 }

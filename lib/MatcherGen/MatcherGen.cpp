@@ -1,5 +1,6 @@
 #include "clang/Tooling/MatcherGen/MatcherGen.h"
 #include <deque>
+#include <algorithm>
 
 using namespace llvm;
 using namespace clang;
@@ -17,27 +18,6 @@ std::string toMatcherName(llvm::StringRef TypeLabel) {
   else {
     return std::string(1, tolower(TypeLabel[0])) + TypeLabel.drop_front(1).str();
   }
-}
-
-void printTreeRecursive(const diff::SyntaxTree& Tree, 
-                        const diff::NodeId CurrId,
-                        size_t Level) {
-  for (size_t i = 0; i < Level; i++) {
-    llvm::outs() << "-";
-  }
-  const diff::Node CurrNode = Tree.getNode(CurrId);
-  llvm::outs() << CurrNode.getTypeLabel();
-  std::string Value = Tree.getNodeValue(CurrId);
-  if (!Value.empty())
-    llvm::outs() << ": " << Value;
-  llvm::outs() << " (" << CurrId << ")\n";
-  for (diff::NodeId Child : CurrNode.Children) {
-    printTreeRecursive(Tree, Child, Level + 1);
-  }
-}
-
-void printTree(const diff::SyntaxTree& Tree) {
-  printTreeRecursive(Tree, Tree.getRootId(), 0);
 }
 
 std::string exprMatcher(const Expr* E) {
@@ -331,6 +311,123 @@ std::vector<diff::NodeId> findSourceDiff(const diff::SyntaxTree& SrcTree,
     }
   }
   return DiffNodes;
+}
+
+std::vector<matcher_gen::Diff> findSourceDiffList(const diff::SyntaxTree& SrcTree,
+                                         const diff::SyntaxTree& DstTree,
+                                         const diff::ASTDiff& Diff) {
+  std::vector<matcher_gen::Diff> DiffNodes;
+  for (diff::NodeId Dst : DstTree) {
+    const diff::Node &DstNode = DstTree.getNode(Dst);
+    // Cover updates and update-moves
+    if (DstNode.Change != diff::None && DstNode.Change != diff::Insert) {
+      diff::NodeId Src = Diff.getMapped(DstTree, Dst);
+      DiffNodes.push_back(matcher_gen::Diff::create(Src, Dst, DstNode.Change, SrcTree, DstTree));
+    }
+    // If insert, then the parent of insert is a diff in the source tree
+    else if (DstNode.Change == diff::Insert) {
+      diff::NodeId Src = Diff.getMapped(DstTree, DstNode.Parent);
+      if (Src.isValid()) {
+        DiffNodes.push_back(matcher_gen::Diff::create(Src, diff::NodeId(-1), diff::Insert, SrcTree, DstTree)); // TODO: How to encode this?
+      }
+    }
+  }
+
+  // Cover deletes
+  // TODO: Where to do moves into new nodes in DstTree?
+  for (diff::NodeId Src : SrcTree) {
+    if (Diff.getMapped(SrcTree, Src).isInvalid()) {
+      DiffNodes.push_back(matcher_gen::Diff::create(Src, diff::NodeId(-1), diff::Delete, SrcTree, DstTree)); // TODO: How to encode this?
+    }
+  }
+  return DiffNodes;
+}
+
+std::vector<Diff> LCS(std::vector<Diff> D1, std::vector<Diff> D2) {
+  int DP[D1.size() + 1][D2.size() + 1];
+  for (size_t i = 0; i < D1.size() + 1; i++) {
+    for (size_t j = 0; j < D2.size() + 1; j++) {
+      if (i == 0 || j == 0) DP[i][j] = 0;
+      else if (Diff::equivalent(D1[i-1], D2[j-1])) DP[i][j] = DP[i-1][j-1] + 1;
+      else DP[i][j] = std::max(DP[i-1][j], DP[i][j-1]);
+    }
+  }
+
+  int length = DP[D1.size()][D2.size()];
+
+  std::vector<Diff> LCSDiff;
+  int i = D1.size();
+  int j = D2.size();
+
+  while (i > 0 && j > 0) {
+    if (Diff::equivalent(D1[i-1], D2[j-1])) {
+      LCSDiff.insert(LCSDiff.begin(), D1[i-1]); // Prioritize first list as source of truth
+      i--; j--; length--;
+    }
+    else if (DP[i-1][j] > DP[i][j-1]) i--;
+    else j--;
+  }
+
+  return LCSDiff;
+}
+
+Diff Diff::create(diff::NodeId Src, diff::NodeId Dst, diff::ChangeKind ChangeKind, 
+  const diff::SyntaxTree& SrcTree, const diff::SyntaxTree& DstTree) {
+  std::string SrcLabel = SrcTree.getNode(Src).getTypeLabel().str();
+  std::string DstLabel = (Dst.Id != -1) ? DstTree.getNode(Dst).getTypeLabel().str() : "";
+  std::string SrcValue = SrcTree.getNodeValue(Src);
+  std::string DstValue = (Dst.Id != -1) ? DstTree.getNodeValue(Dst) : "";
+  return Diff(Src, Dst, ChangeKind, SrcLabel, SrcValue, DstLabel, DstValue);
+}
+
+bool Diff::equivalent(Diff D1, Diff D2) {
+  return D1.SrcTypeLabel == D2.SrcTypeLabel;
+}
+
+Diff::Diff(diff::NodeId Source, diff::NodeId Dest, diff::ChangeKind Kind, 
+  std::string SLabel, std::string SVal, std::string DLabel, std::string DVal): 
+  Src(Source), Dst(Dest), ChangeKind(Kind), SrcTypeLabel(SLabel), SrcValue(SVal), 
+  DstTypeLabel(DLabel), DstValue(DVal) { }
+
+raw_ostream& operator<<(raw_ostream& os, const Diff& D) {
+  os << std::to_string(D.Src.Id);
+  os << ": ";
+  os << D.SrcTypeLabel;
+  if (!D.SrcValue.empty()) {
+    os << ": ";
+    os << D.SrcValue;
+  }
+  os << ", ";
+  os << std::to_string(D.Dst.Id);
+  if (!D.DstTypeLabel.empty()) {
+    os << ": ";
+    os << D.DstTypeLabel;
+  }
+  if (!D.DstValue.empty()) {
+    os << ": ";
+    os << D.DstValue;
+  }
+  os << ", ";
+  switch(D.ChangeKind) {
+    case diff::None:
+      break;
+    case diff::Delete:
+      os << "Delete";
+      break;
+    case diff::Update:
+      os << "Update";
+      break;
+    case diff::Insert:
+      os << "Insert";
+      break;
+    case diff::Move:
+      os << "Move";
+      break;
+    case diff::UpdateMove:
+      os << "Update and Move";
+      break;
+  }
+  return os;
 }
 
 } // end namespace matcher_gen
