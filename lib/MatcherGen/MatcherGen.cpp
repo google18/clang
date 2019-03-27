@@ -320,7 +320,7 @@ std::vector<matcher_gen::Diff> findSourceDiffList(const diff::SyntaxTree& SrcTre
   for (diff::NodeId Dst : DstTree) {
     const diff::Node &DstNode = DstTree.getNode(Dst);
     // Cover updates and update-moves
-    if (DstNode.Change != diff::None && DstNode.Change != diff::Insert) {
+    if (DstNode.Change != diff::Insert) {
       diff::NodeId Src = Diff.getMapped(DstTree, Dst);
       DiffNodes.push_back(matcher_gen::Diff::create(Src, Dst, DstNode.Change, SrcTree, DstTree));
     }
@@ -361,7 +361,10 @@ std::vector<Diff> LCS(std::vector<Diff> D1, std::vector<Diff> D2) {
 
   while (i > 0 && j > 0) {
     if (Diff::equivalent(D1[i-1], D2[j-1])) {
-      LCSDiff.insert(LCSDiff.begin(), D1[i-1]); // Prioritize first list as source of truth
+      // Ignore TranslationUnitDecl which should be common among all ASTs
+      if (D1[i-1].SLabel != "TranslationUnitDecl") { 
+        LCSDiff.insert(LCSDiff.begin(), D1[i-1]); // Prioritize first list as source of truth
+      }
       i--; j--; length--;
     }
     else if (DP[i-1][j] > DP[i][j-1]) i--;
@@ -380,6 +383,7 @@ Diff Diff::create(diff::NodeId Src, diff::NodeId Dst, diff::ChangeKind ChangeKin
   return Diff(Src, Dst, ChangeKind, SrcLabel, SrcValue, DstLabel, DstValue);
 }
 
+// TODO: Make this more granular?
 bool Diff::equivalent(Diff D1, Diff D2) {
   return D1.SrcTypeLabel == D2.SrcTypeLabel;
 }
@@ -410,6 +414,7 @@ raw_ostream& operator<<(raw_ostream& os, const Diff& D) {
   os << ", ";
   switch(D.ChangeKind) {
     case diff::None:
+      os << "Match";
       break;
     case diff::Delete:
       os << "Delete";
